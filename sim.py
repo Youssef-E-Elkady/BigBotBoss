@@ -168,6 +168,9 @@ class SimGrasp(Sim):
         # Dictionary to store object IDs
         self.object_ids = {}
         
+        # Store initial object states
+        self.initial_object_states = {}
+        
         # Load all objects
         for i, obj in enumerate(objects):
             obj_id = self.add_object(
@@ -191,8 +194,75 @@ class SimGrasp(Sim):
                 self.object_ids[f"{obj_type}_{i}"] = obj_id
             else:
                 self.object_ids[obj_type] = obj_id
+            
+            # Store initial state
+            self.initial_object_states[obj_id] = {
+                'position': obj.position,
+                'orientation': pb.getQuaternionFromEuler(obj.orientation),
+                'scaling': obj.scaling
+            }
+        
+        # Store initial robot joint positions
+        self.initial_joint_positions = [0.0] * self.num_joints
+        for i in range(self.num_joints):
+            self.initial_joint_positions[i] = pb.getJointState(self.robot_id, i)[0]
 
-    
+    def reset_simulation(self) -> None:
+        """
+        Resets the simulation by:
+        1. Removing all objects
+        2. Reloading objects in their initial positions
+        3. Resetting robot to initial joint positions
+        """
+        # Remove all objects
+        for obj_id in self.object_ids.values():
+            pb.removeBody(obj_id)
+        
+        # Reload objects in their initial positions
+        for obj_id, initial_state in self.initial_object_states.items():
+            new_obj_id = self.add_object(
+                self.object_ids[list(self.object_ids.keys())[list(self.object_ids.values()).index(obj_id)]],
+                initial_state['position'],
+                pb.getEulerFromQuaternion(initial_state['orientation']),
+                globalScaling=initial_state['scaling']
+            )
+            self.object_ids[list(self.object_ids.keys())[list(self.object_ids.values()).index(obj_id)]] = new_obj_id
+        
+        # Reset robot to initial joint positions
+        self.joint_pos(self.initial_joint_positions)
+        
+        # Wait for robot to reach initial position
+        self.wait_for_robot_to_settle()
+
+    def wait_for_robot_to_settle(self, timeout: float = 10.0, position_threshold: float = 0.01) -> bool:
+        """
+        Waits for the robot to reach its initial position within a threshold.
+        
+        Args:
+            timeout (float): Maximum time to wait in seconds. Defaults to 10.0.
+            position_threshold (float): Maximum allowed difference in radians between current and target joint positions. Defaults to 0.01.
+            
+        Returns:
+            bool: True if robot settled within timeout, False otherwise.
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            # Check if all joints are within threshold
+            all_joints_settled = True
+            for i in range(self.num_joints):
+                current_pos = pb.getJointState(self.robot_id, i)[0]
+                if abs(current_pos - self.initial_joint_positions[i]) > position_threshold:
+                    all_joints_settled = False
+                    break
+            
+            if all_joints_settled:
+                return True
+            
+            # Step simulation
+            self.step_simulation()
+        
+        return False
+
     def step_simulation(self) -> None:
         """
         Steps the simulation.
@@ -235,6 +305,15 @@ class SimGrasp(Sim):
         id = pb.loadURDF(urdf_path, pos, orientation, globalScaling=globalScaling)
         pb.changeDynamics(id, -1, lateralFriction=2, spinningFriction=1)
         return id
+
+    def remove_object(self, obj_id: int) -> None:
+        """
+        Removes an object from the simulation.
+        
+        Args:
+            obj_id (int): The ID of the object to remove.
+        """
+        pb.removeBody(obj_id)
 
     def render_camera(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
